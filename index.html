@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wi-Fi Pulse</title>
+<style>
+  body { font-family: sans-serif; max-width: 420px; margin: 20px auto; padding: 0 16px; }
+  select, button { font-size: 16px; padding: 10px; width: 100%; margin: 8px 0; }
+  label.check { display: block; margin: 10px 0; }
+  #result { font-size: 18px; margin-top: 16px; line-height: 1.6; }
+  .rating { font-weight: bold; padding: 2px 10px; border-radius: 6px; color: white; }
+  .Excellent { background: #2e9d4f; }
+  .Good { background: #e0a000; }
+  .Poor { background: #cc3333; }
+  .saved { color: #2e9d4f; font-size: 15px; }
+  .error { color: #cc3333; font-size: 15px; }
+</style>
+</head>
+<body>
+<h1>Wi-Fi Pulse</h1>
+
+<select id="location">
+  <option value="">Where are you right now?</option>
+  <option>Library</option>
+  <option>Computer Lab 1</option>
+  <option>Computer Lab 2</option>
+  <option>Lecture Hall A</option>
+  <option>Lecture Hall B</option>
+  <option>Residence</option>
+  <option>Cafeteria</option>
+  <option>Outdoors / Campus grounds</option>
+</select>
+
+<label class="check">
+  <input type="checkbox" id="onWifi"> I'm connected to campus Wi-Fi (not mobile data)
+</label>
+
+<button id="start" disabled>Test my Wi-Fi</button>
+<div id="result"></div>
+
+<script>
+const SUPABASE_URL = "https://zugqizvatmsumlykhbnz.supabase.co";
+const SUPABASE_KEY = "sb_publishable_MBLMpDDiIKBMn5vZbi6CEg_pvvvYBUj";
+const COOLDOWN_MS = 60000;
+const FILE_BITS = 1048576 * 8;
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function rate(mbps) {
+  if (mbps >= 10) return "Excellent";
+  if (mbps >= 3) return "Good";
+  return "Poor";
+}
+
+function getDeviceId() {
+  try {
+    let id = localStorage.getItem("wp_device");
+    if (!id) {
+      id = "d" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+      localStorage.setItem("wp_device", id);
+    }
+    return id;
+  } catch (e) {
+    return "unknown";
+  }
+}
+
+function secondsUntilAllowed() {
+  try {
+    const last = Number(localStorage.getItem("wp_last") || 0);
+    return Math.ceil((last + COOLDOWN_MS - Date.now()) / 1000);
+  } catch (e) {
+    return 0;
+  }
+}
+
+async function timeDownload() {
+  const url = "testfile.bin?nocache=" + Date.now();
+  const start = performance.now();
+  const response = await fetch(url, { cache: "no-store" });
+  await response.arrayBuffer();
+  const seconds = (performance.now() - start) / 1000;
+  return FILE_BITS / seconds / 1000000;
+}
+
+async function timeLatency() {
+  const url = "ping.txt?nocache=" + Date.now();
+  const start = performance.now();
+  const response = await fetch(url, { cache: "no-store" });
+  await response.text();
+  return performance.now() - start;
+}
+
+async function saveResult(location, mbps, latency) {
+  const response = await fetch(SUPABASE_URL + "/rest/v1/speed_tests", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": SUPABASE_KEY,
+      "Prefer": "return=minimal"
+    },
+    body: JSON.stringify({
+      location: location,
+      download_mbps: mbps,
+      latency_ms: latency,
+      device_id: getDeviceId()
+    })
+  });
+  if (!response.ok) {
+    throw new Error("HTTP " + response.status + " " + (await response.text()));
+  }
+}
+
+const locationEl = document.getElementById("location");
+const wifiEl = document.getElementById("onWifi");
+const startEl = document.getElementById("start");
+const out = document.getElementById("result");
+
+function updateButton() {
+  startEl.disabled = !(locationEl.value && wifiEl.checked);
+}
+locationEl.addEventListener("change", updateButton);
+wifiEl.addEventListener("change", updateButton);
+
+startEl.addEventListener("click", async () => {
+  const wait = secondsUntilAllowed();
+  if (wait > 0) {
+    out.innerHTML = "<span class='error'>Please wait " + wait + " seconds before testing again.</span>";
+    return;
+  }
+  startEl.disabled = true;
+  out.textContent = "Testing...";
+  try {
+    const speeds = [];
+    for (let i = 0; i < 3; i++) {
+      speeds.push(await timeDownload());
+      out.textContent = "Run " + (i + 1) + " of 3 done...";
+    }
+    const pings = [];
+    for (let i = 0; i < 3; i++) {
+      pings.push(await timeLatency());
+    }
+    const speed = Math.round(median(speeds) * 10) / 10;
+    const latency = Math.round(median(pings));
+    const rating = rate(speed);
+    out.innerHTML =
+      "<span class='rating " + rating + "'>" + rating + "</span><br>" +
+      locationEl.value + "<br>" +
+      "Speed: " + speed.toFixed(1) + " Mbps<br>" +
+      "Latency: " + latency + " ms<br>" +
+      "<span id='status'>Saving...</span>";
+    const status = document.getElementById("status");
+    try {
+      await saveResult(locationEl.value, speed, latency);
+      localStorage.setItem("wp_last", String(Date.now()));
+      status.className = "saved";
+      status.textContent = "Saved. Thank you!";
+    } catch (e) {
+      status.className = "error";
+      status.textContent = "Could not save: " + e.message;
+    }
+  } catch (e) {
+    out.textContent = "Test failed: " + e.message;
+  }
+  updateButton();
+});
+</script>
+</body>
+</html>

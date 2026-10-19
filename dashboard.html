@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wi-Fi Pulse Dashboard</title>
+<style>
+  body { font-family: sans-serif; max-width: 900px; margin: 20px auto; padding: 0 16px; background: #f5f6f8; color: #222; }
+  h1 { margin-bottom: 4px; }
+  h2 { margin-top: 28px; }
+  .sub { color: #666; margin-top: 0; font-size: 14px; }
+  button { padding: 4px 10px; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; margin: 16px 0; }
+  .card { background: white; border-radius: 10px; padding: 14px; box-shadow: 0 1px 3px rgba(0,0,0,.1); }
+  .card .num { font-size: 24px; font-weight: bold; }
+  .card .label { color: #666; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .tile { border-radius: 10px; padding: 14px; color: white; }
+  .tile .name { font-weight: bold; }
+  .tile .speed { font-size: 24px; margin: 4px 0; }
+  .tile .meta { font-size: 13px; opacity: .9; }
+  .Excellent { background: #2e9d4f; }
+  .Good { background: #e0a000; }
+  .Poor { background: #cc3333; }
+  .none { background: #aaa; }
+  ol { background: white; border-radius: 10px; padding: 14px 14px 14px 36px; line-height: 1.8; }
+  .bars { display: flex; align-items: flex-end; gap: 4px; height: 190px; background: white; padding: 12px; border-radius: 10px; }
+  .barwrap { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; }
+  .bar { width: 100%; border-radius: 4px 4px 0 0; }
+  .hour { font-size: 10px; color: #666; margin-top: 4px; }
+</style>
+</head>
+<body>
+<h1>Wi-Fi Pulse Dashboard</h1>
+<p class="sub">Crowdsourced campus Wi-Fi readings &middot; <span id="status"></span> <button id="refresh">Refresh</button></p>
+
+<div class="cards" id="cards"></div>
+
+<h2>Campus map (by location)</h2>
+<div class="grid" id="grid"></div>
+
+<h2>Worst 5 spots</h2>
+<ol id="worst"></ol>
+
+<h2>Median speed by hour of day</h2>
+<div class="bars" id="bars"></div>
+
+<p class="sub">Speeds are medians of anonymous student tests. Excellent: 10 Mbps or more. Good: 3 to 10 Mbps. Poor: under 3 Mbps. These cut-offs are our own choice, not an official standard.</p>
+
+<script>
+const SUPABASE_URL = "https://zugqizvatmsumlykhbnz.supabase.co";
+const SUPABASE_KEY = "sb_publishable_MBLMpDDiIKBMn5vZbi6CEg_pvvvYBUj";
+
+function rate(mbps) {
+  if (mbps >= 10) return "Excellent";
+  if (mbps >= 3) return "Good";
+  return "Poor";
+}
+
+function median(values) {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.floor(sorted.length / 2)];
+}
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+async function load() {
+  const status = document.getElementById("status");
+  status.textContent = "Loading...";
+  try {
+    const url = SUPABASE_URL + "/rest/v1/speed_tests" +
+      "?select=location,download_mbps,latency_ms,device_id,created_at" +
+      "&order=created_at.desc&limit=1000";
+    const response = await fetch(url, { headers: { apikey: SUPABASE_KEY } });
+    if (!response.ok) {
+      throw new Error("HTTP " + response.status + " " + (await response.text()));
+    }
+    render(await response.json());
+    status.textContent = "Updated " + new Date().toLocaleTimeString();
+  } catch (e) {
+    status.textContent = "Could not load: " + e.message;
+  }
+}
+
+function render(rows) {
+  const cards = document.getElementById("cards");
+  const grid = document.getElementById("grid");
+  const worst = document.getElementById("worst");
+  const bars = document.getElementById("bars");
+  cards.replaceChildren();
+  grid.replaceChildren();
+  worst.replaceChildren();
+  bars.replaceChildren();
+
+  function card(num, label) {
+    const c = el("div", "card");
+    c.append(el("div", "num", num), el("div", "label", label));
+    cards.append(c);
+  }
+
+  if (rows.length === 0) {
+    card("0", "Tests collected");
+    grid.append(el("p", "sub", "No data yet."));
+    return;
+  }
+
+  const byLoc = {};
+  const byHour = {};
+  rows.forEach(r => {
+    (byLoc[r.location] = byLoc[r.location] || []).push(r);
+    const h = new Date(r.created_at).getHours();
+    (byHour[h] = byHour[h] || []).push(r.download_mbps);
+  });
+
+  const locStats = Object.keys(byLoc).map(name => ({
+    name: name,
+    speed: median(byLoc[name].map(r => r.download_mbps)),
+    latency: median(byLoc[name].map(r => r.latency_ms)),
+    n: byLoc[name].length
+  })).sort((a, b) => a.speed - b.speed);
+
+  const devices = new Set(rows.map(r => r.device_id)).size;
+  card(String(rows.length), "Tests collected");
+  card(String(devices), "Devices");
+  card(median(rows.map(r => r.download_mbps)).toFixed(1) + " Mbps", "Campus median speed");
+  card(locStats[locStats.length - 1].name, "Best location");
+  card(locStats[0].name, "Worst location");
+
+  locStats.forEach(s => {
+    const t = el("div", "tile " + rate(s.speed));
+    t.append(
+      el("div", "name", s.name),
+      el("div", "speed", s.speed.toFixed(1) + " Mbps"),
+      el("div", "meta", rate(s.speed) + " \u00b7 " + s.n + " tests \u00b7 " + s.latency.toFixed(0) + " ms")
+    );
+    grid.append(t);
+  });
+
+  locStats.slice(0, 5).forEach(s => {
+    worst.append(el("li", "", s.name + ": " + s.speed.toFixed(1) + " Mbps (" + rate(s.speed) + ", " + s.n + " tests)"));
+  });
+
+  const hourMedians = {};
+  Object.keys(byHour).forEach(h => { hourMedians[h] = median(byHour[h]); });
+  const maxSpeed = Math.max(...Object.values(hourMedians));
+  for (let h = 0; h < 24; h++) {
+    const wrap = el("div", "barwrap");
+    const has = hourMedians[h] !== undefined;
+    const bar = el("div", "bar " + (has ? rate(hourMedians[h]) : "none"));
+    bar.style.height = has ? Math.max(4, (hourMedians[h] / maxSpeed) * 140) + "px" : "2px";
+    bar.title = has ? h + ":00 \u2013 " + hourMedians[h].toFixed(1) + " Mbps" : h + ":00 \u2013 no data";
+    wrap.append(bar, el("div", "hour", String(h)));
+    bars.append(wrap);
+  }
+}
+
+document.getElementById("refresh").addEventListener("click", load);
+load();
+</script>
+</body>
+</html>
